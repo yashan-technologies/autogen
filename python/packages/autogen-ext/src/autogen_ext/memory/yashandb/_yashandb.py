@@ -1,19 +1,63 @@
+import asyncio
+import functools
 import logging
 import uuid
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 from autogen_core import CancellationToken, Component, Image
 from autogen_core.memory import Memory, MemoryContent, MemoryMimeType, MemoryQueryResult, UpdateContextResult
 from autogen_core.model_context import ChatCompletionContext
 from autogen_core.models import SystemMessage
 from typing_extensions import Self
+from yasdb.libs.exceptions import DatabaseError, InterfaceError
 
 from ._yashandb_client import YashanDBClient, YashanDBCollection
 from ._yashandb_configs import YashanDBVectorMemoryConfig
-from ._yashandb_embeddings import create_embedding_function
+from ._yashandb_embeddings import create_embedding_function_with_dimension
 from ._yashandb_types import ID, Document, EmbeddingFunction, Metadata, T
 
 logger = logging.getLogger(__name__)
+
+
+def _retry_connections(retries: int = 3, sleep: float = 0.5) -> Callable[[Callable], Callable]:
+    def decorator(method):
+        @functools.wraps(method)
+        async def new_method(self, *args, **kwargs):
+            try:
+                return await method(self, *args, **kwargs)
+            except DatabaseError as e:
+                # YAS-00406 connection is closed
+                # YAS-08012 connection has been disconnected
+                if all(code not in str(e) for code in ("YAS-00406", "YAS-08012")):
+                    raise
+            except InterfaceError as e:
+                if str(e) != "not connected":
+                    raise
+
+            # allow retry connection
+            nonlocal retries
+            logger.warning(f"Connection disconnected, will retry {retries} times.")
+            while retries:
+                retries -= 1
+                try:
+                    logger.info(f"Retrying connection, {retries} retries remaining...")
+                    self._connect()
+                except DatabaseError as e:
+                    # YAS-00402 failed to connect socket
+                    if "YAS-00402" not in str(e):
+                        raise
+
+                    # sleep to avoid congesting network with retry requests
+                    await asyncio.sleep(sleep)
+                    continue
+                break
+
+            logger.info("Reconnected.")
+            return await method(self, *args, **kwargs)
+
+        return new_method
+
+    return decorator
 
 
 class YashanDBVectorMemory(Memory, Component[YashanDBVectorMemoryConfig]):
@@ -171,53 +215,49 @@ class YashanDBVectorMemory(Memory, Component[YashanDBVectorMemoryConfig]):
     component_provider_override = "autogen_ext.memory.yashandb.YashanDBVectorMemory"
 
     _config: YashanDBVectorMemoryConfig
-    _client: Optional[YashanDBClient] = None
-    _collection: Optional[YashanDBCollection] = None
+    _client: YashanDBClient
+    _collection: YashanDBCollection
+
+    _embed: EmbeddingFunction
+    _dim: int
 
     def __init__(self, config: Optional[YashanDBVectorMemoryConfig] = None) -> None:
         self._config = config or YashanDBVectorMemoryConfig()
+        self._embed, self._dim = self._create_embedding_function()
+        self._connect()
 
     @property
     def collection_name(self) -> str:
         """Get the name of the YashanDB collection."""
         return self._config.collection_name
 
-    def _create_embedding_function(self) -> EmbeddingFunction:
+    def _create_embedding_function(self) -> Tuple[EmbeddingFunction, int]:
         """Create an embedding function based on the configuration.
 
         Returns:
-            A YashanDB-compatible embedding function.
+            [0]: A YashanDB-compatible embedding function.
+            [1]: The dimension of the embedding function.
 
         Raises:
             ValueError: If the embedding function type is unsupported.
             ImportError: If required dependencies are not installed.
         """
 
-        return create_embedding_function(self._config.embedding_function_config)
+        return create_embedding_function_with_dimension(self._config.embedding_function_config)
 
-    def _ensure_initialized(self) -> None:
-        """Ensure YashanDB client and collection are initialized."""
-        if self._client is None:
-            self._client = YashanDBClient(self._config)
+    def _connect(self):
+        self._client = YashanDBClient(self._config, self._embed, self._dim)
+        try:
+            self._collection = self._client.get_or_create_collection(
+                name=self._config.collection_name,
+                vector_dimension=self._dim,
+                embedding_function=self._embed,
+                distance_metric=self._config.distance_metric,
+            )
 
-        if self._collection is None:
-            try:
-                # Create embedding function
-                embedding_function = self._create_embedding_function()
-
-                # get vector dimension
-                dim = len(embedding_function(""))
-
-                self._collection = self._client.get_or_create_collection(
-                    name=self._config.collection_name,
-                    vector_dimension=dim,
-                    embedding_function=embedding_function,
-                    distance_metric=self._config.distance_metric,
-                )
-
-            except Exception as e:
-                logger.error(f"Failed to get/create collection: {e}")
-                raise
+        except Exception as e:
+            logger.error(f"Failed to get/create collection: {e}")
+            raise
 
     def _extract_text(self, content_item: str | MemoryContent) -> str:
         """Extract searchable text from content."""
@@ -245,6 +285,7 @@ class YashanDBVectorMemory(Memory, Component[YashanDBVectorMemoryConfig]):
             return 1.0 - (distance / 2.0)
         return 1.0 / (1.0 + distance)
 
+    @_retry_connections()
     async def update_context(
         self,
         model_context: ChatCompletionContext,
@@ -270,11 +311,8 @@ class YashanDBVectorMemory(Memory, Component[YashanDBVectorMemoryConfig]):
 
         return UpdateContextResult(memories=query_results)
 
+    @_retry_connections()
     async def add(self, content: MemoryContent, cancellation_token: Optional[CancellationToken] = None) -> None:
-        self._ensure_initialized()
-        if self._collection is None:
-            raise RuntimeError("Failed to initialize YashanDB")
-
         try:
             # Extract text from content
             text = self._extract_text(content)
@@ -290,16 +328,13 @@ class YashanDBVectorMemory(Memory, Component[YashanDBVectorMemoryConfig]):
             logger.error(f"Failed to add content to YashanDB: {e}")
             raise
 
+    @_retry_connections()
     async def query(
         self,
         query: str | MemoryContent,
         cancellation_token: Optional[CancellationToken] = None,
         **kwargs: Any,
     ) -> MemoryQueryResult:
-        self._ensure_initialized()
-        if self._collection is None:
-            raise RuntimeError("Failed to initialize YashanDB")
-
         try:
             # Extract text for query
             query_text = self._extract_text(query)
@@ -351,27 +386,17 @@ class YashanDBVectorMemory(Memory, Component[YashanDBVectorMemoryConfig]):
             logger.error(f"Failed to query YashanDB: {e}")
             raise
 
+    @_retry_connections()
     async def clear(self) -> None:
-        self._ensure_initialized()
-        if self._collection is None:
-            raise RuntimeError("Failed to initialize YashanDB")
-
         try:
-            results = self._collection.get()
-            if results.ids:
-                self._collection.delete(ids=results.ids)
+            self._collection.clear()
         except Exception as e:
             logger.error(f"Failed to clear YashanDB collection: {e}")
             raise
 
     async def close(self) -> None:
         """Clean up YashanDB client and resources."""
-        self._collection = None
-
-        if self._client:
-            self._client._conn.close()
-
-        self._client = None
+        self._client.close()
 
     async def reset(self) -> None:
         raise NotImplementedError("Reset not implemented.")

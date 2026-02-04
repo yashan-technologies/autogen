@@ -1,5 +1,6 @@
+import logging
 from array import array
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, List
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, cast
 
 from typing_extensions import Self
 
@@ -25,6 +26,46 @@ def create_embedding_function(cfg: EmbeddingFunctionConfig):
         return _sentence_transformer_function(cfg)
 
     raise NotImplementedError
+
+
+def _resolve_sentence_transformer_dim(emb: EmbeddingFunction) -> Optional[int]:
+    if not isinstance(emb, SentenceTransformerEmbeddingFunction):
+        return None
+
+    model = emb._model
+    try:
+        dim = model.get_sentence_embedding_dimension()
+    except Exception:
+        return None
+
+    if dim is None or dim <= 0:
+        return None
+
+    # Embedding model may be truncated
+    truncate_dim = model.truncate_dim
+    if truncate_dim is not None and truncate_dim < dim:
+        dim = truncate_dim
+
+    return dim
+
+
+def _get_embedding_function_dimension(emb: EmbeddingFunction) -> int:
+    dim = _resolve_sentence_transformer_dim(emb)
+    if dim is not None:
+        logging.info("Deduced embedding vector dimension automatically")
+        return dim
+
+    # Fallback to calling the embedding function
+    logging.warning(
+        "Cannot determine embedding vector dimension automatically, fallback to calling the embedding function..."
+    )
+    return len(emb(""))
+
+
+def create_embedding_function_with_dimension(cfg: EmbeddingFunctionConfig):
+    embedding_function = create_embedding_function(cfg)
+    dim = _get_embedding_function_dimension(embedding_function)
+    return (embedding_function, dim)
 
 
 def _default_embedding_function(_: DefaultEmbeddingFunctionConfig) -> EmbeddingFunction:

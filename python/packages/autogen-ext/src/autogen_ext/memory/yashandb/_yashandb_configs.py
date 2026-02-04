@@ -71,9 +71,10 @@ class YashanDBVectorMemoryConfig(BaseModel):
     )
     k: int = Field(default=3, description="Number of results to return in queries")
     score_threshold: Optional[float] = Field(default=None, description="Minimum similarity score threshold")
-    # allow_reset: bool = Field(default=False, description="Whether to allow resetting the YashanDB client")
-    tenant: str = Field(default="default_tenant", description="Tenant to use")
-    database: str = Field(default="default_database", description="Database to use")
+
+    m: int = Field(default=16, description="The M value for HNSW index")
+    ef: int = Field(default=100, description="The ef construction value for HNSW index")
+
     embedding_function_config: EmbeddingFunctionConfig = Field(
         default_factory=DefaultEmbeddingFunctionConfig,
         description="Configuration for the embedding function",

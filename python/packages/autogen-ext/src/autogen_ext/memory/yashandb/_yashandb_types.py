@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, TypeAlias, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional, TypeAlias, TypeVar, Union, cast
 
 if TYPE_CHECKING:
     from array import array
@@ -20,3 +20,10 @@ Document = str
 Embedding: TypeAlias = "array[float]"
 
 EmbeddingFunction = Callable[[Document], Embedding]
+
+IncludeItem = Literal["documents", "embeddings", "metadatas", "distances"]
+Include = List[IncludeItem]
+
+
+def nonnull(x: Optional[T]) -> T:
+    return cast(T, x)
