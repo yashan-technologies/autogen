@@ -1,9 +1,8 @@
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, TypeAlias
 
-import yasdb
-import yasdb.cursor
+import yaspy as yashandb
 from typing_extensions import Self
 
 from ._yashandb_configs import YashanDBVectorMemoryConfig
@@ -20,16 +19,19 @@ from ._yashandb_types import (
     nonnull,
 )
 
+Connection: TypeAlias = yashandb.Connection
+Cursor: TypeAlias = yashandb.Cursor
+
 
 class YashanDBClient:
     _config: YashanDBVectorMemoryConfig
-    _conn: yasdb.YasdbConnection
+    _conn: Connection
 
     _embed: EmbeddingFunction
     _dim: int
 
     @property
-    def _cursor(self) -> yasdb.cursor.YasdbCursor:
+    def _cursor(self) -> Cursor:
         return self._conn.cursor()
 
     def __init__(
@@ -39,13 +41,12 @@ class YashanDBClient:
         dim: int,
     ):
         self._config = config
-        self._conn = yasdb.connect(
-            host=config.host,
-            port=config.port,
+        self._conn = yashandb.connect(
+            dsn=f"{config.host}:{config.port}",
             user=config.user,
             password=config.password,
-            autocommit=True,
         )
+        self._conn.autocommit = True
 
         self._embed = embed
         self._dim = dim
@@ -253,7 +254,7 @@ class YashanDBCollection:
         n_results: int = 10,
         score_threshold: Optional[float] = None,
         *,
-        cursor: yasdb.cursor.YasdbCursor,
+        cursor: Cursor,
         include: Set[IncludeItem],
     ) -> YashanDBSingleQueryResult:
         metric = _VECTOR_DISTANCE_METRIC_MAPPING[self.distance_metric]

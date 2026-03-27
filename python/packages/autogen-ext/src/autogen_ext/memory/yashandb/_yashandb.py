@@ -9,7 +9,7 @@ from autogen_core.memory import Memory, MemoryContent, MemoryMimeType, MemoryQue
 from autogen_core.model_context import ChatCompletionContext
 from autogen_core.models import SystemMessage
 from typing_extensions import Self
-from yasdb.libs.exceptions import DatabaseError, InterfaceError
+from yaspy import DatabaseError, InterfaceError
 
 from ._yashandb_client import YashanDBClient, YashanDBCollection
 from ._yashandb_configs import YashanDBVectorMemoryConfig
