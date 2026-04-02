@@ -15,7 +15,7 @@ from autogen_ext.memory.yashandb._yashandb_configs import (
 
 # Skip all tests if YashanDB is not available
 try:
-    import yasdb as _
+    import yaspy as _
 except ImportError:
     pytest.skip("YashanDB not available", allow_module_level=True)
 
