@@ -157,7 +157,7 @@ class YashanDBCollection:
             c.execute(f"""
                 CREATE TABLE IF NOT EXISTS "{name}" (
                     id VARCHAR(36 CHAR) NOT NULL PRIMARY KEY, -- UUID
-                    doc VARCHAR(65534) NOT NULL,
+                    doc CLOB NOT NULL,
                     embedding VECTOR({vector_dimension}) NOT NULL,
                     meta JSON
                 )""")
